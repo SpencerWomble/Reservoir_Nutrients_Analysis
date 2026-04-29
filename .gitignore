@@ -1,0 +1,10 @@
+# .gitignore
+__pycache__/
+*.pyc
+.env
+data/
+figures/
+outputs/
+.positron/
+*.csv
+*.xlsx
