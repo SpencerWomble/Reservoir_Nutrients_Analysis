@@ -28,8 +28,8 @@ def pivot_wider(
     columns = [columns] if isinstance(columns, str) else list(columns)
 
     if id_cols is None:
-        id_cols = ['date_time', 'site', 'id', 'latitude', 'longitude',
-                   'distance_from_centerline_km', 'total_distance']
+        id_cols = ['date_time', 'site', 'id', 'position', 'year', 'month', 'decimal_date', 'latitude', 'longitude',
+                   'distance_from_centerline_km', 'total_distance', "activity_depth_value"]
         id_cols = [c for c in id_cols if c in df.columns]
 
     wide = df.pivot_table(

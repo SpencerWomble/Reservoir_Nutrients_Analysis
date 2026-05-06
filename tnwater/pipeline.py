@@ -8,6 +8,7 @@ from .preprocessing import (
     build_datetime,
     clean_column_names,
     select_columns,
+    ft_to_m
 )
 
 
@@ -30,6 +31,7 @@ def load_water_quality(
     df = select_columns(df, columns)
     df = build_datetime(df)
     df = add_date_features(df)
+    df = ft_to_m(df)
     return df
  
  

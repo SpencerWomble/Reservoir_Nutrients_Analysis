@@ -11,7 +11,10 @@ from .preprocessing import (
     clean_column_names,
     select_columns,
     add_date_features,
-    filter_ids
+    filter_ids,
+    ft_to_m,
+    outlier_check,
+    outlier_to_na
 )
 
 from .plotting import(
@@ -29,6 +32,9 @@ __all__ = [
     "DEFAULT_COLUMNS",
     "DEFAULT_SITE_IDS",
     "filter_ids",
+    "ft_to_m",
+    "outlier_check",
+    "outlier_to_na",
     "pivot_wider",
     "add_date_features",
     "plot_id",

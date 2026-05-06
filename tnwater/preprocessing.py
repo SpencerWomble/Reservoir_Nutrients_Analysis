@@ -2,6 +2,7 @@
 from typing import Optional
  
 import pandas as pd
+import numpy as np
 
 
  
@@ -21,6 +22,8 @@ DEFAULT_COLUMNS = [
     "longitude",
     "huc_eight_name",
     "start_time_zone_code",
+    "activity_depth_value",
+    "activity_depth_unit_code"
 ]
 
 """Project-wide constants for Tennessee water quality processing."""
@@ -145,4 +148,30 @@ def add_date_features(df: pd.DataFrame, dt_col: str = "date_time") -> pd.DataFra
     df["year"] = df[dt_col].dt.year
     df["month"] = df[dt_col].dt.month
     df["decimal_date"] = _decimal_date(df[dt_col])
+    return df
+
+
+# feet to meters function for the depths
+def ft_to_m(df: pd.DataFrame, depth_col: str = "activity_depth_value",
+            unit_col: str = "activity_depth_unit_code") -> pd.DataFrame:
+    """Convert feet to meters"""
+    df[depth_col] = np.where(df[unit_col] == 'ft',
+                             df[depth_col] / 3.281,
+                             df[depth_col])
+    return df
+
+
+# quick outlier check function
+def outlier_check(df, sort_col, keep_col, rows):
+    """Check for outliers in first x many rows"""
+    sub_df = (df
+    .sort_values(by=sort_col, ascending=False)
+    .head(rows)
+    [[keep_col]]
+    )
+    return sub_df
+
+# function to convert outliers to Nan - Note that this mutates in-place
+def outlier_to_na(df, col, greater_than_threshold):
+    df[col] = df[col].mask(df[col] > greater_than_threshold)
     return df
