@@ -1,0 +1,1195 @@
+
+```{r}
+library(tidyverse)
+library(here)
+library(mgcv)
+
+df <- read.csv(here("data", "cleaned_data.csv"))
+
+```
+
+```{r}
+  # removed the following due to identicial values (0.09 mg/L NO3+NO2) that looks erroneous since they're all the same across vastly different distances
+  # 'dh2', 'dh3', 'dh4', 'dh9', 'dh10',
+  # 'dh11', 'dh12', 'dh13', 'dh14', 'dh15', 'dh18'
+
+#df<- df |> 
+ # dplyr::filter(!id %in% c('dh2', 'dh3', 'dh4', 'dh9', 'dh10',
+  #'dh11', 'dh12', 'dh13', 'dh14', 'dh15', 'dh18')
+  #)
+
+#unique(df$id)
+
+
+
+```
+
+```{r}
+# filter out those two data points from the 1970's
+
+df<- df |> 
+  dplyr::filter(year > 1980)
+
+
+```
+
+
+
+```{r}
+# rename cols
+df<- df |> 
+    dplyr::rename(no3_no2 = inorganic_nitrogen_.nitrate_and_nitrite._total,
+                 tp = phosphorus_total,
+                 chla = chlorophyll_a_total)|> 
+    mutate(doy = yday(date_time)
+    )
+
+
+```
+
+
+# Iniital Modeling with LM
+
+```{r}
+
+names(df)
+
+# building modeling df
+mod_df<- df |> 
+    dplyr::select(no3_no2, total_distance, decimal_date, year, month, doy, date_time, id, site) |> 
+    dplyr::mutate(id = as.factor(id),
+                 site = factor(site, levels = c('center_hill', 'dale_hollow', 'percy_priest'))) |> 
+    dplyr::arrange(date_time, id) |> # important to sort by ascending datetime for the corelation str in the model. Also important to arrange by id so the grouping is clear for the model
+    na.omit()
+
+
+```
+
+
+
+```{r}
+
+
+```
+
+
+## GAMs
+
+## GS vs GI GAM comparison
+```{r}
+
+
+# S model with no global smooths
+gsm_s <- gamm(
+  log(no3_no2) ~ 
+    s(total_distance, site, bs = "fs") +
+    s(doy, site, bs = "fs", xt = list(bs = "cc")) +
+    s(doy, bs = "cc") +              # keep this one, it's doing work
+    ti(total_distance, doy,
+       by = site, bs = c("tp", "cc")) +
+    site +
+    s(year, site, bs = "fs", k = 7),       # I'm worried the default is undersmoothing
+   # s(year, k = 5),                  # optional - keep if you want a pooled temporal claim
+  random = list(id = ~ 1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(0, 366)),
+  data = mod_df,
+  method = "ML"         
+)
+
+
+gsm<-gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(total_distance, site, bs = "fs")+ # does the relationship between no3no2 and distance vary by site
+   # s(doy, by = site, bs = "cc")+
+    s(doy, site, bs = "fs", xt = list(bs = "cc"))+ # does the relationship between no3no2 and doy vary by site
+    s(doy, bs = 'cc')+
+    ti(total_distance, doy, # tells you if the season-no3no2 and distance-no3on2 relationships interact and how that looks for each reservoir
+        by = site,
+        bs = c("tp", "cc"))+
+    s(year, k = 5)+
+    site+
+    s(year, site, bs = 'fs'),
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(0, 366)),
+  data = mod_df,
+  method = "ML"
+)
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+# slices: how does the x effect change at different z values?
+newd <- expand.grid(x = seq(min(mod_df$total_distance), max(mod_df$total_distance), length = 100),
+                    z = quantile(mod_df$doy, c(0.25, 0.5, 0.75)))
+p <- predict(gsm, newd, se.fit = TRUE)
+newd$fit <- p$fit; newd$lwr <- p$fit - 1.96*p$se.fit; newd$upr <- p$fit + 1.96*p$se.fit
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+m_simple<-gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(doy, bs = 'cc')+
+    s(year)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(0, 366)),
+  data = mod_df,
+  method = "ML",
+  gamma = 1.4 # standard practice now to penalize undersmoothing
+)
+
+AIC(m_simple$lme, gsm$lme)
+
+
+m_td_by<-gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(total_distance, by = site, m = 1)+ # must set m to 1 for heavier penalization on the null space of the smooth for this model to converge
+    s(doy, bs = 'cc')+
+    s(year)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(0, 366)),
+  data = mod_df,
+  method = "ML",
+  gamma = 1.4 # standard practice now to penalize undersmoothing
+)
+
+AIC(m_td_by$lme, m_simple$lme, gsm$lme)
+
+
+m_ti_by<-gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(total_distance, by = site, m = 1)+ # must set m to 1 for heavier penalization on the null space of the smooth for this model to converge
+    s(doy, bs = 'cc')+
+    ti(total_distance, doy,
+       by = site,
+       bs = c("tp", "cc"),
+       m = list(1, 1)) + 
+    s(year)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(0, 366)),
+  data = mod_df,
+  method = "ML",
+  gamma = 1.4 # standard practice now to penalize undersmoothing
+)
+
+AIC(m_ti_by$lme, m_td_by$lme, m_simple$lme, gsm$lme)
+# with the ti is the best so far - let's run with it
+
+gratia::draw(m_ti_by$gam)
+
+
+# CAN't CONVERGE
+m_yr_ti_by<-gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(total_distance, by = site, m = 1)+ # must set m to 1 for heavier penalization on the null space of the smooth for this model to converge
+    s(doy, bs = 'cc')+
+    ti(total_distance, doy,
+       by = site,
+       bs = c("tp", "cc"),
+       m = list(1, 1)) + 
+    s(year)+
+    s(year, by = site, m = 1)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(0, 366)),
+  data = mod_df,
+  method = "ML",
+  gamma = 1.4 # standard practice now to penalize undersmoothing
+)
+
+
+AIC( gim$lme, m_ti_by$lme, m_td_by$lme, m_simple$lme, gsm$lme)
+
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+
+
+mt<-gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(total_distance, by =site)+ # does the relationship between no3no2 and distance vary by site
+   # s(doy, by = site, bs = "cc")+
+    s(doy, bs = 'cc')+
+    s(doy, by=site, bs = "cc")+ # does the relationship between no3no2 and doy vary by site
+    ti(total_distance, doy, # tells you if the season-no3no2 and distance-no3on2 relationships interact and how that looks for each reservoir
+        by = site,
+        bs = c("tp", "cc"))+
+    s(year)+
+    s(year, by=site)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(0, 366)),
+  data = mod_df,
+  method = "REML",
+  gamma = 1.4 # standard practice now to penalize undersmoothing
+)
+
+AIC(gsm$lme, mt$lme) # that's very interesting
+
+summary(mt$gam)
+
+gratia::draw(mt$gam)
+
+gratia::draw(mt$gam, select = 's(year,site)', ci_type = "simultaneous")+
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, colour = NA) +
+  facet_wrap(~site)
+
+# check doy by site
+gratia::draw(mt$gam, select = 's(doy,site)', ci_type = "simultaneous")+
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, colour = NA) +
+  facet_wrap(~site) 
+# no differences from zero but very different shapes
+
+
+
+# check total_distance by site
+gratia::draw(mt$gam, select = 's(total_distance,site)', ci_type = "simultaneous")+
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, colour = NA) +
+  facet_wrap(~site) # no differences from zero but very different shapes
+# all points contain zero but pretty difference shape for percy priest
+
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+#############################################################################
+#############################################################################
+
+# current front-runner model
+
+#############################################################################
+
+```
+
+```{r}
+# Global smooth with individual smooths for factor levels
+gim <- gamm(
+  log(no3_no2) ~ 
+    s(total_distance) +
+    s(total_distance, by = site, m = 1) +
+    s(doy, by = site, bs = "cc", m = 1) +     # now cyclic, deviation-penalized
+    s(doy, bs = "cc") +
+    ti(total_distance, doy,
+       by = site,
+       bs = c("tp", "cc"),
+       m = list(1, 1)) +                       # first-deriv penalty on both margins
+    s(year, k = 6) + # k = 6 is the max k that the model can computationally handle
+    s(year, by = site, m = 1),
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(0, 366)),
+  data = mod_df,
+  method = "ML",
+  gamma = 1.4 # standard practice now to reduce undersmoothing
+)
+
+
+gratia::draw(gim$gam)
+gratia::draw(gim$gam, select = 's(total_distance)')
+gratia::draw(gim$gam, select = 's(total_distance)')
+gratia::draw(gim$gam, select = 's(doy)')
+gratia::draw(gim$gam, select = 's(year)')
+
+
+####################
+
+# compare difference in smooths between sites for day of year
+
+# ---- Approach 1: gratia (pairwise differences for the doy factor-by smooth)
+doy_diffs <- difference_smooths(
+  gim$gam,                # gamm() returns a list; use $gam for smooth methods
+  select = "s(doy)",      # picks up s(doy, by = site) automatically
+  n = 200,
+  ci_level = 0.95,
+  partial_match = TRUE    # matches both s(doy) and s(doy):siteX
+)
+
+# Plot all pairwise comparisons
+draw(doy_diffs, ci_type = 'simultaneous') +
+  labs(y = expression(Delta~log(NO[3]~"+"~NO[2])))
+
+#Reading the three panels:
+#Center Hill vs Dale Hollow (top left): Strong seasonal contrast. Center Hill runs about 1 log-unit (≈ 2.7×) higher in winter and late fall, converges with Dale Hollow through summer (roughly doy 150 to 225 the ribbon spans zero), and diverges again into fall. So the two reservoirs have similar warm-season NO₃+NO₂ but very different cool-season concentrations.
+#Center Hill vs Percy Priest (top right): Effectively indistinguishable. The pointwise CI includes zero across the entire observed range. You wouldn't draw a conclusion of seasonal difference between these two from this fit.
+#Dale Hollow vs Percy Priest (bottom): The most pronounced contrast. Dale Hollow is roughly 1.3 log-units lower (≈ 3.7× lower) in spring and late fall, then crosses to about 0.7 higher (≈ 2×) around doy 175 to 200. That is a genuine phase inversion of the seasonal pattern, not just an amplitude difference.
+
+#Center Hill and Percy Priest behave similarly through the year; Dale Hollow is the outlier, with much lower cool-season concentrations and a relatively elevated summer signal. That is consistent with Dale Hollow's well-known oligotrophy (low background loading, clear-water Obey River basin) and would invite discussion of mixing regime, stratification timing, and watershed inputs versus the Caney Fork and Stones River basins.
+
+# Tidy data frame of differences with CIs and a "significant" flag
+doy_diffs_df <- doy_diffs |>
+  mutate(
+    sig = (.lower_ci > 0) | (.upper_ci < 0),
+    pair = paste(.level_1, "-", .level_2)
+  )
+
+####################
+
+# plot ti term
+library(tidyr)
+
+# Distance scenarios within each site, since reservoirs differ in length
+scenarios <- mod_df |>
+  group_by(site) |>
+  reframe(
+    position       = factor(c("Near-dam", "Mid-reservoir", "Headwater"),
+                            levels = c("Near-dam", "Mid-reservoir", "Headwater")),
+    total_distance = quantile(total_distance, c(0.10, 0.50, 0.90))
+  )
+
+grid <- scenarios |>
+  crossing(doy = seq(1, 366, length.out = 200)) |>
+  mutate(year = mean(mod_df$year))
+
+# Predict from $gam; the random effect lives on $lme and isn't needed here
+preds <- predict(gim$gam, newdata = grid, se.fit = TRUE)
+
+grid <- grid |>
+  mutate(
+    fit_log = preds$fit,
+    se_log  = preds$se.fit,
+    fit     = exp(fit_log),
+    lwr     = exp(fit_log - 1.96 * se_log),
+    upr     = exp(fit_log + 1.96 * se_log)
+  )
+
+# make the plot
+ggplot(grid, aes(doy, fit, color = position, fill = position)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 0.8) +
+  facet_grid(position ~ site)+
+  scale_color_brewer(palette = 'Dark2')+
+  scale_fill_brewer(palette = 'Dark2')+
+  #facet_wrap(~ site, scales = "free_y") +
+  scale_y_log10() +
+  labs(title = "Relationship between Day of Year and Reservoir Postion",
+       subtitle = "Plotted on a log10 scale. Position definitions were based on the 0.10, 0.50, and 0.90 quantiles",
+       x = "Day of year",
+       y = expression("Predicted NO"[3]*"+"*"NO"[2]*" (mg/L)"),
+       color = "Position", fill = "Position") +
+  theme_bw()+
+  theme(text = element_text(size = 14))
+
+#########################
+
+# plot smooth differences for year
+year_diffs <- difference_smooths(
+  gim$gam,                # gamm() returns a list; use $gam for smooth methods
+  select = "s(year)",      # picks up s(doy, by = site) automatically
+  n = 200,
+  ci_level = 0.95,
+  partial_match = TRUE    # matches both s(doy) and s(doy):siteX
+)
+
+# Plot all pairwise comparisons
+draw(year_diffs, ci_type = 'simultaneous') +
+  labs(y = expression(Delta~log(NO[3]~"+"~NO[2])))
+
+
+
+
+
+##############################################################
+
+# comparisons and model validation checks
+
+AIC(gsm_s$lme, gsm$lme, gim$lme)
+# pretty much the same
+gam.check(gsm_s$gam)
+gam.check(gsm$gam)
+gam.check(gim$gam)
+
+gratia::draw(gsm_s$gam, ci_type = "simultaneous")
+gratia::draw(gsm$gam, ci_type = "simultaneous")
+
+sm <- smooth_estimates(gsm, smooth = "s(total_distance,site)") |>
+  add_confint()
+
+ggplot(sm, aes(x = total_distance, y = .estimate,
+               colour = site, fill = site)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              alpha = 0.2, colour = NA) +
+  geom_line(linewidth = 0.8) +
+  labs(x = "Total distance (km)",
+       y = "Partial effect",
+       colour = "Site", fill = "Site") +
+  theme_bw() +
+  theme(legend.position = "right")
+
+concurvity(gsm$gam)
+
+res_norm <- resid(gsm$lme, type = "normalized")
+acf(res_norm)             # did CAR1 actually absorb temporal AC?
+pacf(res_norm)
+qqnorm(res_norm); qqline(res_norm)
+plot(fitted(gsm$lme), res_norm)
+
+
+
+# to get continuous confidence intervals
+library(gratia)
+draw(gim$gam, ci_type = "simultaneous")
+# or
+sm <- smooth_estimates(gim$gam) |> add_confint(type = "simultaneous")
+
+draw(gsm, select = 's(total_distance,site)')
+draw(gsm, select = 's(total_distance)')
+
+
+
+
+# residuals for gsm_s
+gms_s_res<- resid(gsm_s$lme, type = 'normalized')
+
+plot(gms_s_res ~ mod_df$site)
+plot(gms_s_res ~ mod_df$year)
+plot(gms_s_res ~ mod_df$doy)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### GAM1
+
+```{r}
+
+head(mod_df)
+
+str(mod_df)
+knots = list(doy = c(1, 366))
+
+gam1<-  gamm(
+  log(no3_no2) ~
+    
+    # Overall spatial effect
+    s(total_distance) +
+    
+    # Site-specific spatial deviations
+    s(total_distance, site, bs = "fs") +
+    
+    # Site-specific seasonal cycles
+    s(doy, bs = "cc", by = site) +
+    
+    # Seasonal reshaping of spatial gradient
+    ti(total_distance, doy,
+       by = site,
+       bs = c("tp", "cc"),
+       k = c(10, 8)) +
+    
+    # Long-term trends
+    s(year, by = site, k = 5) +
+    
+    # Site mean differences
+    site,
+
+  random = list(id = ~1),
+
+  correlation = corCAR1(form = ~ decimal_date | id),
+
+  knots = list(doy = c(1, 366)),
+
+  data = mod_df,
+  method = "REML"
+)
+
+#AIC(gam1$lme, gam1c$lme)
+
+# leave in the correlation structure as its only using 1 df and it is a good defense in case a reviewer asks about 
+# GAM smooth summaries
+summary(gam1$gam)
+
+# Random effect variances
+VarCorr(gam1$lme)
+
+# Estimated random intercepts
+ranef(gam1$lme)
+
+# Full mixed model summary
+summary(gam1$lme)
+# correlation str is not helping much (Phi = 0.001)
+
+###################################################################################
+
+library(gratia)
+# plot gam
+
+plot.gam(gam1$gam, residuals = TRUE)
+
+draw(gam1$gam)
+
+
+# plot total_distance-NO3+NO2 relationship on response scale
+nd <- expand.grid(
+  total_distance = seq(
+    min(mod_df$total_distance),
+    max(mod_df$total_distance),
+    length.out = 100
+  ),
+  doy = 196,
+  year = median(mod_df$year),
+  site = unique(mod_df$site)
+)
+
+pred <- predict(
+  gam1$gam,
+  newdata = nd,
+  se.fit = TRUE
+)
+nd$fit <- exp(pred$fit)
+nd$lo  <- exp(pred$fit - 1.96 * pred$se.fit)
+nd$hi  <- exp(pred$fit + 1.96 * pred$se.fit)
+# then ggplot it
+
+site_names <- c(
+  center_hill = "Center Hill",
+  dale_hollow = "Dale Hollow",
+  percy_priest = "Percy Priest"
+)
+
+ggplot(nd, aes(x = total_distance, y = fit)) +
+  geom_point(data = mod_df, aes(y = no3_no2), 
+             alpha = 0.25, size = 1.3, color = "grey40") +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.25, fill = "steelblue") +
+  geom_line(color = "steelblue", linewidth = 1) +
+  facet_wrap(~ site, scales = "free_x",
+            labeller = as_labeller(site_names)) +
+  labs(title=expression("Relationship Between Total Distance and"~NO[3]*"+"*NO[2]),
+        x="Total Distance from Dam",
+        y =expression(NO[3]+NO[2]~(mg/L)))+
+  theme_bw()+
+  theme(text = element_text(size = 13),
+        strip.text = element_text(size = 12))+
+  coord_cartesian(ylim = c(0, quantile(mod_df$no3_no2, 0.99))) # clip the plotted points to exclude the top 1%. This keeps the trendline from getting crushed due to scaling the y axis
+
+###################################################################################
+
+# see how much of the variance is explained by the random effect of year
+
+# Get the variance components from the lme part of the model
+VarCorr(gam1$lme)
+
+# Calculate proportion of variance explained by random effects - update these numbers every time you change the model
+random_variance_prop <- 0.7212692 / (0.7212692 + 0.8406647) # ICC formula
+cat("Proportion of variance explained by station id random effects (Intraclass Correlation Coefficient (ICC)) :", 
+    round(random_variance_prop, 3))
+
+
+# Get fitted values that include random effects
+fitted_full <- fitted(gam1$lme)
+
+# Calculate R² for fixed model components
+cat("R² from fixed effects only:", summary(gam1$gam)$r.sq)
+cat("Deviance Explained:", summary(gam1$gam)$dev.expl)
+
+
+summary(gam1$gam)$dev.expl
+
+```
+
+### Interpretations
+ICC: About 58% of the unexplained variability is among stations, 42% is within stations. That's a strong station-level signal and tells you several things:
+The random effect on station was the right call. If this ICC had been 0.05, you'd shrug and consider dropping the random effect. At 0.58, it's doing real work and your fixed-effect standard errors would be badly underestimated without it.
+There's spatial heterogeneity within reservoirs that your current fixed effects aren't capturing. Stations differ from each other systematically, and the random intercept is just absorbing that variation. If you have spatial covariates available — distance from dam, depth, tributary proximity, embayment vs main channel — adding them as fixed effects would convert some of that station variance into explained structure. Think of station ICC as a measure of "stuff I haven't explained that varies spatially," and it's a useful diagnostic for whether you're missing covariates.
+If you want to report this in a manuscript, the cleanest version is something like: "Station-level random intercepts accounted for 58% of the residual variance (random intercept SD = 0.376, residual SD = 0.322 on the log scale), indicating substantial among-station heterogeneity in mean concentrations beyond what reservoir identity, seasonality, and long-term trends explained."
+
+
+
+## Model Validation
+```{r}
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+# model validation
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+gam.check(gam1$gam)
+
+qqnorm(residuals(gam1$lme)) # way better looking when log-transformed
+plot(fitted(gam1$lme), residuals(gam1$lme)) # not perfect, but much better than before transformation
+
+
+# check concurvity
+concurvity(gam1$gam) # acceptable level
+
+# extract residuals from the parametric portion of the model
+mod_df$rf_res<- resid(gam1$lme, type = "normalized")
+
+mod_df$rf_response_res<- resid(gam1$lme, type = "response")
+
+
+plot(mod_df$rf_response_res ~ mod_df$doy)
+plot(mod_df$rf_response_res ~ mod_df$site)
+plot(mod_df$rf_response_res ~ mod_df$year)
+plot(mod_df$rf_response_res ~ mod_df$total_distance)
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+# check for temporal autocorrelatino
+acf(mod_df$rf_res) # only the first line on the x-axis should be outside the blue dashed lines
+
+pacf(mod_df$rf_res) # no boxes should be outside the blue dashed lines
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+# check for normality of the random effects
+
+ranef_mod_full_reff<- ranef(gam1$lme)
+
+hist(ranef_mod_full_reff$id$`(Intercept)`)
+
+plot(density(ranef_mod_full_reff$id$`(Intercept)`), 
+     main = "Density of random intercepts")
+
+curve(dnorm(x, mean = mean(ranef_mod_full_reff$id$`(Intercept)`), 
+            sd = sd(ranef_mod_full_reff$id$`(Intercept)`)),
+      add = TRUE, col = "red", lty = 2)
+
+
+```
+
+
+
+# Model experimentation
+
+Questions to answer:
+1. Is there an overall relationship between total distance and NO3+NO2?
+2. Does that realtionship differ among reservoirs?
+3. Is the distance-NO3+NO2 relationship change seasonally?
+4. Is there an overall temporal trend?
+
+```{r}
+
+
+
+m1<- gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(doy, bs = 'cc')+
+    s(year, k = 5)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(1, 366)),
+  data = mod_df,
+  method = "ML"
+)
+
+m2<-gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(total_distance, site, bs = "fs")+
+    s(doy, bs = 'cc')+
+    s(year, k = 5)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(1, 366)),
+  data = mod_df,
+  method = "ML"
+)
+
+
+
+m3<-gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(total_distance, site, bs = "fs")+
+    s(doy, by = site, bs = "cc")+
+    s(doy, bs = 'cc')+
+    s(year, k = 5)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(1, 366)),
+  data = mod_df,
+  method = "ML"
+)
+
+
+m4<-gamm(
+  log(no3_no2) ~ 
+    s(total_distance)+
+    s(total_distance, site, bs = "fs")+
+    s(doy, by = site, bs = "cc")+
+    s(doy, bs = 'cc')+
+    ti(total_distance, doy,
+        by = site,
+        bs = c("tp", "cc"))+
+    s(year, k = 5)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(1, 366)),
+  data = mod_df,
+  method = "ML"
+)
+
+# AIC for ML
+AIC(m1$lme,m2$lme,m3$lme,m4$lme)
+# m4 is the best
+
+# concurvity checks
+concurvity(m1$gam)
+concurvity(m2$gam)
+concurvity(m3$gam)
+concurvity(m4$gam)
+
+# summaries
+summary(m1$gam)
+summary(m2$gam)
+summary(m3$gam)
+summary(m4$gam)
+
+# gam.check
+gam.check(m1$gam)
+gam.check(m2$gam)
+gam.check(m3$gam)
+gam.check(m4$gam)
+
+####################################################
+
+# m4 but with the global effect of doy removed - to compare to m4
+
+# had to drop global smooths for total distance and doy due to serious concurvity with their factor smooths
+m5<-gamm(
+  log(no3_no2) ~ 
+   # s(total_distance)+
+    s(total_distance, site, bs = "fs")+ # does the relationship between no3no2 and distance vary by site
+   # s(doy, by = site, bs = "cc")+
+    s(doy, site, bs = "fs", xt = list(bs = "cc"))+ # does the relationship between no3no2 and doy vary by site
+    s(doy, bs = 'cc')+
+    ti(total_distance, doy, # tells you if the season-no3no2 and distance-no3on2 relationships interact and how that looks for each reservoir
+        by = site,
+        bs = c("tp", "cc"))+
+    s(year, k = 5)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(1, 366)),
+  data = mod_df,
+  method = "ML"
+)
+
+# has factor smooth for year + main effect for year
+m6<-gamm(
+  log(no3_no2) ~ 
+   # s(total_distance)+
+    s(total_distance, site, bs = "fs")+ # does the relationship between no3no2 and distance vary by site
+   # s(doy, by = site, bs = "cc")+
+    s(doy, site, bs = "fs", xt = list(bs = "cc"))+ # does the relationship between no3no2 and doy vary by site
+    s(doy, bs = 'cc')+
+    ti(total_distance, doy, # tells you if the season-no3no2 and distance-no3on2 relationships interact and how that looks for each reservoir
+        by = site,
+        bs = c("tp", "cc"))+
+    s(year, site, bs = "fs")+
+    s(year, k = 5)+
+    site,
+  random = list(id = ~1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots = list(doy = c(1, 366)),
+  data = mod_df,
+  method = "ML"
+)
+
+AIC(m5$lme, m6$lme)
+# no meaningful difference - means go with parsimony and cut the global doy term
+
+summary(m5$gam)
+gam.check(m5$gam)
+
+```
+
+
+```{r}
+
+a<-draw(m6, select = c('s(year,site)'))+
+  scale_color_brewer(palette = 'Dark2')+
+  theme(legend.position = "right")
+
+b<-draw(m6, select = c('s(year)'))+
+  scale_color_brewer(palette = 'Dark2')
+
+a | b
+
+wrap_plots(a, b, ncol = 2)
+
+```
+
+m5 plotting and validation
+
+
+```{r}
+
+
+concurvity(m5$gam)
+
+gratia::draw(m5)
+
+mod_df$m5_resid<-resid(m5$lme, type = 'normalized')
+mod_df$m5_fit<- fitted(m5$lme)
+
+plot(m5_resid ~ m5_fit, data = mod_df)
+# not bad
+
+
+plot(m5_resid ~ total_distance, data = mod_df)
+plot(m5_resid ~ decimal_date, data = mod_df)
+plot(m5_resid ~ month, data = mod_df)
+plot(m5_resid ~ doy, data = mod_df)
+plot(m5_resid ~ year, data = mod_df)
+plot(m5_resid ~ site, data = mod_df)
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+# check for temporal autocorrelatino
+acf(mod_df$m5_resid) # only the first line on the x-axis should be outside the blue dashed lines
+
+pacf(mod_df$m5_resid) # no boxes should be outside the blue dashed lines
+
+# there's a good bit of residual autocorrelation, but there's not a lot we can do about it
+# we made a best effort and that's usually good enough
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+#######################################################
+#######################################################
+#######################################################
+
+# plot random effects
+
+# check for normality of the random effects
+
+m5_ranef<- ranef(m5$lme)
+
+hist(m5_ranef$id$`(Intercept)`)
+# looks good
+
+plot(density(m5_ranef$id$`(Intercept)`), 
+     main = "Density of random intercepts")
+
+curve(dnorm(x, mean = mean(m5_ranef$id$`(Intercept)`), 
+            sd = sd(m5_ranef$id$`(Intercept)`)),
+      add = TRUE, col = "red", lty = 2)
+# not perfect but I'll take it
+
+
+```
+
+## Check random effects contribution to variance capture
+
+```{r}
+
+###################################################################################
+
+# see how much of the variance is explained by the random effect of year
+
+# Get the variance components from the lme part of the model
+VarCorr(m5$lme)
+
+# Calculate proportion of variance explained by random effects - update these numbers every time you change the model
+random_variance_prop <- 0.7919151 / (0.7919151 + 0.8145630) # ICC formula
+cat("Proportion of variance explained by station id random effects (Intraclass Correlation Coefficient (ICC)) :", 
+    round(random_variance_prop, 3))
+
+
+# Get fitted values that include random effects
+fitted_full <- fitted(m5$lme)
+
+
+
+```
+
+
+
+## Plot model resutls for manuscript
+
+
+## How to read partial effect plots from a GAM(M)
+
+Partial effect plots show the contribution of an individual smooth term to the linear predictor, holding all other model terms constant. Because the response is modeled on the log scale in our case, the partial effect is additive on that scale: a value of zero indicates no contribution from the smooth at those covariate values, positive values raise the predicted response above the baseline set by the intercept and remaining model terms, and negative values lower it. For the tensor product interaction shown here, contours connect combinations of total distance and day of year that produce equal partial effects, and the colored surface identifies regions where the joint nonlinear effect is strongest. Differences across panels reflect site-specific structure in this two-dimensional response surface.
+
+
+## Partial Effect of Year (i.e., the temporal trend)
+
+```{r}
+library(gratia)
+
+# select a single smooth - here we're doing year trend
+yr_sm <- smooth_estimates(m5, select = "s(year)")
+
+names(mod_df)
+
+# make the plot
+yr_smooth_plt<-
+  yr_sm |>
+  add_confint() |>
+  ggplot(aes(y = .estimate, x = year)) +
+  #geom_point( inherit.aes = FALSE, data = mod_df, aes(x=year, y=m5_fit))+
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+    alpha = 0.2,
+  ) +
+  geom_line(linewidth = 1.5) +
+    geom_rug(data = mod_df, aes(x = year),
+           inherit.aes = FALSE, sides = "b", alpha = 0.3) +
+  labs(
+    y = "Partial effect",
+    title = ("Partial effect of ~ f(Year)"),
+    x = "Year"
+  )+
+  theme_bw()+
+  theme(text = element_text(size = 13))
+
+yr_smooth_plt
+
+
+ggsave("figures/yr_smooth_plt.png",
+        plot = yr_smooth_plt)
+
+
+```
+
+# Partial effects of total distance-site factor smooth
+
+```{r}
+library(gratia)
+
+a<-smooth_estimates(m5)
+
+unique(a$.smooth)
+
+# select a single smooth - here we're doing year trend
+dist_sm <- smooth_estimates(m5, select = "s(total_distance,site)")
+
+smooth_distance_plt<-
+ reservoir_labels <- c(
+  center_hill  = "Center Hill",
+  dale_hollow  = "Dale Hollow",
+  percy_priest = "Percy Priest"
+)
+
+smooth_distance_plt <-
+  smooth_estimates(m5, select = "s(total_distance,site)") |>
+  add_confint() |>
+  ggplot(aes(x = total_distance, y = .estimate)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              fill = "gray70", alpha = 0.4) +
+  geom_line(linewidth = 1, color = "black") +
+  geom_rug(data = mod_df, aes(x = total_distance),
+           inherit.aes = FALSE, sides = "b", alpha = 0.3) +
+  facet_wrap(~ site, labeller = as_labeller(reservoir_labels)) +
+  labs(
+    x = "\nTotal distance (km)",
+    y = "Partial effect",
+    title = "Partial effect of ~ f(Total Distance, Site)",
+    caption = "Basis: Factor smooth"
+  ) +
+  theme_bw(base_size = 14)
+
+smooth_distance_plt
+
+ggsave("figures/smooth_distance.png",
+      plot = smooth_distance_plt)
+
+
+#+
+
+  #)
+
+```
+
+
+#### Partial effect of doy-site factor smooth
+
+```{r}
+
+# select a single smooth - here we're doing year trend
+doy_sm <- smooth_estimates(m5, select = "s(doy,site)")
+
+smooth_distance_plt<-
+ reservoir_labels <- c(
+  center_hill  = "Center Hill",
+  dale_hollow  = "Dale Hollow",
+  percy_priest = "Percy Priest"
+)
+
+smooth_doy_plt <-
+  smooth_estimates(m5, select = "s(doy,site)") |>
+  add_confint() |>
+  ggplot(aes(x = doy, y = .estimate)) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci),
+              fill = "gray70", alpha = 0.4) +
+  geom_line(linewidth = 1, color = "black") +
+  geom_rug(data = mod_df, aes(x = doy),
+           inherit.aes = FALSE, sides = "b", alpha = 0.3) +
+  facet_wrap(~ site, labeller = as_labeller(reservoir_labels)) +
+  labs(
+    x = "\nDay of Year",
+    y = "Partial effect",
+    title = "Partial effect of ~ f(Day of Year, Site)",
+    caption = "Basis: Factor smooth"
+  ) +
+  theme_bw(base_size = 14)
+
+smooth_doy_plt
+
+ggsave("figures/smooth_doy.png",
+      plot = smooth_doy_plt)
+
+```
+
+
+# Partial Effect of Day of Year-Total Distance Interaction
+
+
+```{r}
+library(gratia)
+
+# select a single smooth - here we're doing year trend
+td_doy_sm_center_hill <- smooth_estimates(m5, 
+        select = "ti(total_distance,doy):sitecenter_hill",
+                    n = 100,
+                    dist = 0.1
+                    )
+
+names(mod_df)
+
+# make the plot
+td_doy_center_hill_smooth_plt<-
+ggplot(td_doy_sm_center_hill, aes(x = total_distance, y = doy)) +
+  geom_raster(aes(fill = .estimate)) +
+  geom_contour(aes(z = .estimate), colour = "white", alpha = 0.4) +
+  #facet_wrap(~ .by) +
+  scale_fill_viridis_c(name = "Partial effect")+
+  labs(title = "Partial Effects for Day of Year-Total Distance Interaction",
+       subtitle = 'Center Hill',
+       x = "Total distance", 
+       y = "Day of year") +
+  theme_bw()+
+  theme(text = element_text(size = 14))
+
+td_doy_center_hill_smooth_plt
+
+
+
+
+############################################
+
+# Dale Hollow
+
+
+# select a single smooth - here we're doing year trend
+td_doy_sm_dale_hollow <- smooth_estimates(m5, 
+        select = "ti(total_distance,doy):sitedale_hollow",
+                    n = 100,
+                    dist = 0.1
+                    )
+
+
+# make the plot
+td_doy_dale_hollow_smooth_plt<-
+ggplot(td_doy_sm_dale_hollow, aes(x = total_distance, y = doy)) +
+  geom_raster(aes(fill = .estimate)) +
+  geom_contour(aes(z = .estimate), colour = "white", alpha = 0.4) +
+  #facet_wrap(~ .by) +
+  scale_fill_viridis_c(name = "Partial effect") +
+  labs(subtitle = "Dale Hollow",
+       x = "Total distance", 
+       y = "Day of year") +
+  theme_bw()+
+  theme(text = element_text(size = 14))
+
+td_doy_dale_hollow_smooth_plt
+
+
+############################################
+
+# Percy Priest
+
+
+# select a single smooth - here we're doing year trend
+td_doy_sm_percy_priest <- smooth_estimates(m5, 
+        select = "ti(total_distance,doy):sitepercy_priest",
+                    n = 100,
+                    dist = 0.1
+                    )
+
+
+# make the plot
+td_doy_percy_priest_smooth_plt<-
+ggplot(td_doy_sm_percy_priest, aes(x = total_distance, y = doy)) +
+  geom_raster(aes(fill = .estimate)) +
+  geom_contour(aes(z = .estimate), colour = "white", alpha = 0.4) +
+  #facet_wrap(~ .by) +
+  scale_fill_viridis_c(name = "Partial effect") +
+  labs(subtitle = "Percy Priest",
+       x = "Total distance", 
+       y = "Day of year") +
+  theme_bw()+
+  theme(text = element_text(size = 14))
+
+td_doy_percy_priest_smooth_plt
+
+
+#######################################
+
+# combine and save plots
+library(patchwork)
+
+
+doy_dist_contor_plots<-
+  td_doy_center_hill_smooth_plt + 
+  td_doy_dale_hollow_smooth_plt +
+  td_doy_percy_priest_smooth_plt + plot_layout(ncol = 2)
+
+
+doy_dist_contor_plots
+
+# may need to change margins for publication
+ggsave("figures/ydoy_dist_contor_plots.png",
+        plot = doy_dist_contor_plots,
+        width = 12, 
+        height = 8, 
+        dpi = 300)
+```

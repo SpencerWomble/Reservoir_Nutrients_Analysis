@@ -1,0 +1,14 @@
+name: C:\Users\Spencer 
+  Womble\OneDrive\TN_Tech2\projects\reservoir_work\analysis_files\project_folder\.conda
+channels:
+  - defaults
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+  - https://repo.anaconda.com/pkgs/msys2
+dependencies:
+  - python=3.11
+  - pandas
+  - matplotlib
+  - seaborn
+prefix: C:\Users\Spencer 
+  Womble\OneDrive\TN_Tech2\projects\reservoir_work\analysis_files\project_folder\.conda

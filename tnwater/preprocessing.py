@@ -9,6 +9,7 @@ import numpy as np
 
 # Default columns to retain from the raw WQX export
 DEFAULT_COLUMNS = [
+    'monitoring_location_identifier',
     "start_date",
     "start_time",
     "characteristic",
@@ -29,13 +30,16 @@ DEFAULT_COLUMNS = [
 """Project-wide constants for Tennessee water quality processing."""
 
 # Default set of site IDs with good data coverage
-DEFAULT_SITE_IDS = [
-    'cent_h1', 'cent_h10', 'cent_h11', 'cent_h12', 'cent_h13', 'cent_h15',
-    'cent_h16', 'cent_h17', 'cent_h18', 'cent_h19', 'cent_h7',
-    'dh11', 'dh14', 'dh16', 'dh18', 'dh2', 'dh4',
-    'pp1', 'pp10', 'pp11', 'pp14', 'pp16',
-    'pp2', 'pp3', 'pp4', 'pp5', 'pp6', 'pp7', 'pp9'
-]
+DEFAULT_SITE_IDS = ['pp16', 'cent_h13',      'pp8',  'cent_h1',  'cent_h7',
+      'pp6',     'pp11', 'cent_h16',     'dh17',     'dh16',      'dh8',
+      'dh6', 'cent_h14',  'cent_h9', 'cent_h12',  'cent_h6',  'cent_h2',
+  'cent_h8',  'cent_h5',  'cent_h3',     'pp15',     'pp12',      'pp4',
+      'pp3',      'pp2',      'pp1',      'pp9',     'pp10',     'pp13',
+     'pp14',      'pp7',     'dh10',     'dh15',      'dh4',      'dh2',
+      'dh9',     'dh11',      'dh3',     'dh14',     'dh13',     'dh18',
+     'dh12',      'dh1',      'dh5', 'cent_h20',  'cent_h4', 'cent_h11',
+      'pp5', 'cent_h19', 'cent_h17', 'cent_h18', 'cent_h15', 'cent_h10',
+      'dh7']
  
 
 
@@ -174,4 +178,9 @@ def outlier_check(df, sort_col, keep_col, rows):
 # function to convert outliers to Nan - Note that this mutates in-place
 def outlier_to_na(df, col, greater_than_threshold):
     df[col] = df[col].mask(df[col] > greater_than_threshold)
+    return df
+
+def remove_before_dash(df, column):
+    """Remove everything before and including the last '-' in a string column."""
+    df[column] = df[column].str.split('-').str[-1].str.strip()
     return df

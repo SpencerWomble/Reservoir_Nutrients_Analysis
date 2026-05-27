@@ -8,3 +8,5 @@ outputs/
 .positron/
 *.csv
 *.xlsx
+supporting_docs/
+no3_no2_robot_interpretation

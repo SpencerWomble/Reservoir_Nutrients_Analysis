@@ -1,0 +1,162 @@
+
+
+
+
+```{r}
+library(tidyverse)
+library(here)
+
+df <- read.csv(here("data", "cleaned_data.csv"))
+
+```
+
+```{r}
+# rename cols
+df<- df |> 
+    dplyr::rename(no3_no2 = inorganic_nitrogen_.nitrate_and_nitrite._total,
+                 tp = phosphorus_total,
+                 chla = chlorophyll_a_total,
+                 tss = total_suspended_solids_suspended)
+
+
+
+```
+
+```{r}
+# concentration vs position (id)
+df |> 
+    ggplot(aes(x=total_distance, y=no3_no2))+
+    geom_point()+
+    geom_smooth(se = FALSE)+
+    theme_bw()+
+    facet_wrap(~site)
+
+```
+
+```{r}
+# sample balance across position
+sample_counts <- df %>%
+  count(site, id, month, name = "n") %>%
+  # Fill empty cells with 0 so they show up in the plot, not as gaps
+  complete(site, id, month, fill = list(n = 0))
+
+ggplot(sample_counts, aes(x = month, y = id, fill = n)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(aes(label = n, color = n > max(n) / 2), size = 3, show.legend = FALSE) +
+  scale_color_manual(values = c("black", "white")) +
+  scale_fill_viridis_c(option = "mako", direction = -1, name = "n") +
+  facet_wrap(~ site, ncol = 1) +
+  labs(
+    title = "Sample size by position, month, and reservoir",
+    x = NULL, y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold")
+  )
+
+
+```
+
+```{r}
+df_long <- df %>%
+  select(site, id, month, no3_no2, tp, tss, chla) %>%
+  pivot_longer(
+    cols      = c(no3_no2, tp, tss, chla),
+    names_to  = "analyte",
+    values_to = "concentration"
+  ) %>%
+  filter(!is.na(concentration), concentration > 0) %>%   # log scale needs > 0
+  mutate(
+    analyte = factor(
+      analyte,
+      levels = c("no3_no2", "tp", "tss", "chla"),
+      labels = c("NO3+NO2", "TP", "TSS", "Chl-a")
+    )
+  )
+
+ggplot(df_long, aes(x = month, y = concentration,
+                    color = id, fill = id)) +
+  stat_summary(fun.data = mean_cl_boot, geom = "ribbon",
+               alpha = 0.18, color = NA) +
+  stat_summary(fun = mean, geom = "line",
+               aes(group = id), linewidth = 0.8) +
+  stat_summary(fun = mean, geom = "point", size = 1.6) +
+  facet_grid(analyte ~ site, scales = "free_y") +
+  scale_y_log10() +
+  scale_x_continuous(breaks = 1:12, labels = month.abb, minor_breaks = NULL) +
+  scale_color_viridis_d(option = "viridis", end = 0.85) +
+  scale_fill_viridis_d(option = "viridis", end = 0.85) +
+  labs(
+    title    = "Monthly nutrient concentrations by position within reservoirs",
+    subtitle = "Non-parallel lines suggest position × season interaction",
+    x = NULL,
+    y = "Concentration (log scale)",
+    color = "Position", fill = "Position"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    strip.text       = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    legend.position  = "bottom"
+  )
+
+```
+
+```{r}
+# How many samples per year do we have?
+
+print(df |> 
+  group_by(year) |> 
+  count() |> 
+  ungroup(), 
+  n = 30)
+
+
+print(df |> 
+  distinct(id, .keep_all = TRUE) |> 
+  group_by(site) |> 
+  count() |> 
+  ungroup(), 
+  n = 30)
+
+
+
+# see hte values for the stations that only had <3 observations
+obs_chk_df<- df |>
+  group_by(id) %>%
+  filter(n() < 3) %>%
+  ungroup()
+
+
+```
+
+
+## Coplots
+
+```{r}
+
+# check if the relationship between distance from dam and no3_no2 is consistent across reservoirs
+ggplot(df, aes(x = total_distance, y = no3_no2)) +
+  geom_point(alpha = 0.4, size = 1.5, color = "grey40") +
+  geom_smooth(se = TRUE, color = "dodgerblue4") +
+  
+  facet_wrap(~ site, ncol = 2) +
+  
+  labs(
+    x = "Distance from Dam (km)",
+    y = expression(NO[3] + NO[2]~"(mg/L)"),
+    title = "Nitrate Concentration by Site"
+  ) +
+  
+  theme_bw(base_size = 13) +
+  theme(
+    strip.background = element_rect(fill = "grey90"),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+# center hill throws the pattern a bit
+
+

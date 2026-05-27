@@ -1,12 +1,19 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tnwater"
 version = "0.1.0"
-requires-python = ">=3.9"
-dependencies = ["pandas", "tzdata"]
+description = "Reservoir water quality analysis utilities for Tennessee"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "matplotlib",
+    "seaborn",
+]
 
-[tool.setuptools]
-packages = ["tnwater"]dir
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tnwater*"]

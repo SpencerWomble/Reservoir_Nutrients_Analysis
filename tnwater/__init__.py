@@ -14,7 +14,8 @@ from .preprocessing import (
     filter_ids,
     ft_to_m,
     outlier_check,
-    outlier_to_na
+    outlier_to_na,
+    remove_before_dash
 )
 
 from .plotting import(
@@ -35,7 +36,8 @@ __all__ = [
     "ft_to_m",
     "outlier_check",
     "outlier_to_na",
+    'remove_before_dash'
     "pivot_wider",
     "add_date_features",
-    "plot_id",
+    "plot_id"
 ]

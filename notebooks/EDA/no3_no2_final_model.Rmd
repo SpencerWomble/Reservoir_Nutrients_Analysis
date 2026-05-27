@@ -1,0 +1,282 @@
+---
+title: "NO3+NO2 Spatiotemporal Patterns Across Tennessee Reservoirs"
+subtitle: "Hierarchical GAMM with site-specific smooths and AR(1) correlation"
+author: "Spencer G. Womble"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 8,
+  fig.height = 5,
+  dpi = 150
+)
+```
+
+# Overview
+
+This analysis models nitrate plus nitrite (NO3+NO2) concentrations across three
+Tennessee reservoirs (Center Hill, Dale Hollow, Percy Priest) as a function of:
+
+- **Spatial position** within each reservoir (distance from dam),
+- **Day of year** (seasonal cycle),
+- **Year** (interannual trend), and
+- The **interaction** between distance and day of year.
+
+The model is a hierarchical generalized additive mixed model (GAMM) with a
+global smooth plus site-specific deviation smooths, a continuous within-station
+AR(1) correlation structure to handle repeated measures at fixed sampling
+stations, and cyclic splines for day of year.
+
+# Setup
+
+```{r libraries}
+library(tidyverse)   # data wrangling and plotting
+library(here)        # project-relative paths
+library(mgcv)        # GAMM fitting
+library(gratia)      # tidy smooth plots and difference_smooths()
+library(tidyr)       # crossing() for prediction grids
+```
+
+# Data import and cleaning
+
+```{r import}
+df_raw <- read.csv(here("data", "cleaned_data.csv"))
+```
+
+Two records from the 1970s sit far outside the period of consistent
+monitoring and would otherwise pull the year-effect smooth. Drop them.
+
+```{r filter-old-records}
+df <- df_raw |>
+  dplyr::filter(year > 1980)
+```
+
+Rename verbose source columns to compact analysis names and derive a
+day-of-year column from the timestamp.
+
+```{r rename-and-derive}
+df <- df |>
+  dplyr::rename(
+    no3_no2 = inorganic_nitrogen_.nitrate_and_nitrite._total,
+    tp      = phosphorus_total,
+    chla    = chlorophyll_a_total
+  ) |>
+  dplyr::mutate(doy = yday(date_time))
+```
+
+# Build the modeling data frame
+
+`id` is the sampling station, treated as a random intercept. Data are sorted
+by datetime within station because the continuous AR(1) correlation in
+`corCAR1()` is order-sensitive within each grouping unit.
+
+```{r model-df}
+mod_df <- df |>
+  dplyr::select(
+    no3_no2, total_distance, decimal_date,
+    year, month, doy, date_time, id, site
+  ) |>
+  dplyr::mutate(
+    id   = as.factor(id),
+    site = factor(site, levels = c("center_hill", "dale_hollow", "percy_priest"))
+  ) |>
+  dplyr::arrange(date_time, id) |>
+  na.omit()
+```
+
+# Model fitting
+
+The response is log-transformed to stabilize variance and meet the assumption
+of approximate Gaussian errors. The smooth structure is:
+
+- `s(total_distance)`: global distance-from-dam effect.
+- `s(total_distance, by = site, m = 1)`: site-specific deviations from the
+  global distance smooth, with a first-derivative penalty so the site smooths
+  shrink toward zero rather than toward a flat line.
+- `s(doy, bs = "cc")`: global seasonal cycle, cyclic so Jan 1 and Dec 31 join
+  smoothly.
+- `s(doy, by = site, bs = "cc", m = 1)`: site-specific seasonal deviations,
+  also cyclic and deviation-penalized.
+- `ti(total_distance, doy, by = site, ...)`: tensor interaction allowing the
+  seasonal cycle to differ between near-dam and headwater positions, with
+  marginal first-derivative penalties on both axes.
+- `s(year, k = 6)` and `s(year, by = site, m = 1)`: global interannual trend
+  with site-specific deviations. `k = 6` is the largest basis dimension the
+  model can fit without numerical issues given the year coverage.
+
+A random intercept for `id` plus a continuous AR(1) correlation on
+`decimal_date` together account for repeated measures at fixed stations.
+`gamma = 1.4` follows current practice for reducing undersmoothing in mgcv.
+
+```{r fit-gamm}
+gim <- gamm(
+  log(no3_no2) ~
+    s(total_distance) +
+    s(total_distance, by = site, m = 1) +
+    s(doy, bs = "cc") +
+    s(doy, by = site, bs = "cc", m = 1) +
+    ti(total_distance, doy,
+       by = site,
+       bs = c("tp", "cc"),
+       m  = list(1, 1)) +
+    s(year, k = 6) +
+    s(year, by = site, m = 1),
+  random      = list(id = ~ 1),
+  correlation = corCAR1(form = ~ decimal_date | id),
+  knots       = list(doy = c(0, 366)),
+  data        = mod_df,
+  method      = "ML",
+  gamma       = 1.4
+)
+```
+
+# Inspecting fitted smooths
+
+```{r smooth-grid, fig.height = 7}
+gratia::draw(gim$gam)
+```
+
+```{r individual-smooths}
+gratia::draw(gim$gam, select = "s(total_distance)")
+gratia::draw(gim$gam, select = "s(doy)")
+gratia::draw(gim$gam, select = "s(year)")
+```
+
+# Pairwise seasonal differences between sites
+
+`difference_smooths()` returns the pointwise contrast between site-specific
+day-of-year smooths with simultaneous confidence bands. Pass `gim$gam`
+because `gamm()` returns a list and the smooth methods operate on the gam
+component.
+
+```{r doy-diffs}
+doy_diffs <- gratia::difference_smooths(
+  gim$gam,
+  select        = "s(doy)",
+  n             = 200,
+  ci_level      = 0.95,
+  partial_match = TRUE
+)
+
+draw(doy_diffs, ci_type = "simultaneous") +
+  labs(y = expression(Delta ~ log(NO[3] ~ "+" ~ NO[2])))
+```
+
+A tidy version with a flag for intervals that exclude zero:
+
+```{r doy-diffs-tidy}
+doy_diffs_df <- doy_diffs |>
+  dplyr::mutate(
+    sig  = (.lower_ci > 0) | (.upper_ci < 0),
+    pair = paste(.level_1, "vs", .level_2)
+  )
+```
+
+## Interpretation
+
+**Center Hill vs Dale Hollow.** Strong seasonal contrast. Center Hill runs
+about 1 log-unit (roughly 2.7x) higher in winter and late fall, converges
+with Dale Hollow through summer (the ribbon spans zero roughly from doy 150
+to 225), and diverges again into fall. Warm-season concentrations are
+similar at the two reservoirs; cool-season concentrations are not.
+
+**Center Hill vs Percy Priest.** Effectively indistinguishable across the
+observed range. The pointwise interval includes zero throughout, so no
+seasonal difference between these two reservoirs is supported by this fit.
+
+**Dale Hollow vs Percy Priest.** The most pronounced contrast. Dale Hollow
+is roughly 1.3 log-units lower (about 3.7x lower) in spring and late fall,
+then crosses to about 0.7 higher (about 2x) around doy 175 to 200. This is
+a phase inversion of the seasonal pattern rather than a simple amplitude
+shift.
+
+Taken together, Center Hill and Percy Priest behave similarly through the
+year and Dale Hollow is the outlier, with much lower cool-season
+concentrations and a relatively elevated summer signal. That is consistent
+with Dale Hollow's well-known oligotrophy (low background loading,
+clear-water Obey River basin) and points toward a discussion of mixing
+regime, stratification timing, and watershed inputs versus the Caney Fork
+and Stones River basins.
+
+# Distance-by-DOY interaction visualization
+
+Distance scenarios are defined within each site because the three reservoirs
+differ in length. The 10th, 50th, and 90th percentiles of `total_distance`
+within each site define near-dam, mid-reservoir, and headwater positions.
+
+```{r ti-grid}
+scenarios <- mod_df |>
+  dplyr::group_by(site) |>
+  dplyr::reframe(
+    position       = factor(
+      c("Near-dam", "Mid-reservoir", "Headwater"),
+      levels = c("Near-dam", "Mid-reservoir", "Headwater")
+    ),
+    total_distance = quantile(total_distance, c(0.10, 0.50, 0.90))
+  )
+
+grid <- scenarios |>
+  tidyr::crossing(doy = seq(1, 366, length.out = 200)) |>
+  dplyr::mutate(year = mean(mod_df$year))
+```
+
+Predictions are taken from the GAM component; the random effect lives on
+`$lme` and is not needed for population-level predictions.
+
+```{r ti-predict}
+preds <- predict(gim$gam, newdata = grid, se.fit = TRUE)
+
+grid <- grid |>
+  dplyr::mutate(
+    fit_log = preds$fit,
+    se_log  = preds$se.fit,
+    fit     = exp(fit_log),
+    lwr     = exp(fit_log - 1.96 * se_log),
+    upr     = exp(fit_log + 1.96 * se_log)
+  )
+```
+
+```{r ti-plot, fig.height = 6.5}
+ggplot(grid, aes(doy, fit, color = position, fill = position)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 0.8) +
+  facet_grid(position ~ site) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_y_log10() +
+  labs(
+    title    = "Seasonal NO3+NO2 by reservoir position",
+    subtitle = "Position defined by within-site 0.10, 0.50, and 0.90 quantiles of distance from dam (log10 y-axis)",
+    x        = "Day of year",
+    y        = expression("Predicted NO"[3] * "+" * "NO"[2] * " (mg/L)"),
+    color    = "Position",
+    fill     = "Position"
+  ) +
+  theme_bw() +
+  theme(text = element_text(size = 14))
+```
+
+# Pairwise interannual differences between sites
+
+```{r year-diffs}
+year_diffs <- gratia::difference_smooths(
+  gim$gam,
+  select        = "s(year)",
+  n             = 200,
+  ci_level      = 0.95,
+  partial_match = TRUE
+)
+
+draw(year_diffs, ci_type = "simultaneous") +
+  labs(y = expression(Delta ~ log(NO[3] ~ "+" ~ NO[2])))
+```

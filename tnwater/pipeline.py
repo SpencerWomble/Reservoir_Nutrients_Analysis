@@ -8,7 +8,8 @@ from .preprocessing import (
     build_datetime,
     clean_column_names,
     select_columns,
-    ft_to_m
+    ft_to_m,
+    remove_before_dash
 )
 
 
@@ -32,6 +33,7 @@ def load_water_quality(
     df = build_datetime(df)
     df = add_date_features(df)
     df = ft_to_m(df)
+    df = remove_before_dash(df=df, column='monitoring_location_identifier')
     return df
  
  
