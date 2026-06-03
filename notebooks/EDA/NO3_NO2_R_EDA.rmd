@@ -6,30 +6,63 @@
 library(tidyverse)
 library(here)
 
-df <- read.csv(here("data", "cleaned_data.csv"))
+df <- read.csv(here("data", "cleaned_data_long.csv"))
+
+head(df)
+
+unique(df$characteristic)
 
 ```
+
+
 
 ```{r}
 # rename cols
 df<- df |> 
-    dplyr::rename(no3_no2 = inorganic_nitrogen_.nitrate_and_nitrite._total,
-                 tp = phosphorus_total,
-                 chla = chlorophyll_a_total,
-                 tss = total_suspended_solids_suspended)
+    dplyr::filter(characteristic == 'Inorganic nitrogen (nitrate and nitrite)') |> 
+    dplyr::arrange(date_time)
+
+
 
 
 
 ```
 
 ```{r}
+
+df |> 
+  dplyr::filter(year > 1980) |> 
+  ggplot(aes(x=year, y= measure_value))+
+  geom_point()+
+  theme_bw()+
+  facet_wrap(~site)
+
+
+```
+
+
+```{r}
+
 # concentration vs position (id)
 df |> 
-    ggplot(aes(x=total_distance, y=no3_no2))+
-    geom_point()+
-    geom_smooth(se = FALSE)+
-    theme_bw()+
-    facet_wrap(~site)
+  mutate(near_mdl = measure_value <= mdl) |> 
+  
+  ggplot(aes(x = total_distance,
+             y = measure_value,
+             color = near_mdl)) +
+  
+  geom_point(size = 2) +
+  
+  geom_smooth(se = FALSE, color = "black") +
+  
+  theme_bw() +
+  
+  facet_wrap(~site, scales = 'free')
+
+
+
+df |> 
+  ggplot(aes())
 
 ```
 

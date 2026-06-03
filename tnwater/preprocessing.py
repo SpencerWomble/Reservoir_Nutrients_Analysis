@@ -158,10 +158,11 @@ def add_date_features(df: pd.DataFrame, dt_col: str = "date_time") -> pd.DataFra
 # feet to meters function for the depths
 def ft_to_m(df: pd.DataFrame, depth_col: str = "activity_depth_value",
             unit_col: str = "activity_depth_unit_code") -> pd.DataFrame:
-    """Convert feet to meters"""
-    df[depth_col] = np.where(df[unit_col] == 'ft',
-                             df[depth_col] / 3.281,
-                             df[depth_col])
+    """Convert feet to meters and update the unit label."""
+    df = df.copy()
+    mask = df[unit_col] == 'ft'
+    df.loc[mask, depth_col] = df.loc[mask, depth_col] * 0.3048
+    df.loc[mask, unit_col] = 'm'
     return df
 
 
