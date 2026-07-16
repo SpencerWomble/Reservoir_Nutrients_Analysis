@@ -1,0 +1,458 @@
+---
+title: "Water quality EDA & summary statistics"
+format: html
+---
+
+<!--
+=====================================================================
+HOW TO SWITCH ANALYTES (TP  <->  NOx)
+=====================================================================
+There are two config blocks, one per language (Quarto does not share
+variables between R and Python here). To run the NOx analysis, edit:
+
+  Python block : CHARACTERISTIC, VALUE_CAP, ANALYTE
+  R block      : CHARACTERISTIC, VALUE_CAP, ANALYTE
+
+The exact string to use for CHARACTERISTIC must match a value in the
+'characteristic' column. To list the options, run once:
+
+  pd.read_csv("data/cleaned_data_long.csv")["characteristic"].unique()
+=====================================================================
+-->
+
+# Python EDA
+
+```{python}
+#| label: py-setup
+import pandas as pd
+
+# ── EDIT HERE to switch analyte ──────────────────────────────────
+CHARACTERISTIC = "Phosphorus"   # exact string in the 'characteristic' column
+VALUE_CAP      = 4              # drop obvious errors >= this; set None to keep all
+ANALYTE        = "TP"           # short label used in printed output
+# ─────────────────────────────────────────────────────────────────
+
+SEASON = {12: "winter", 1: "winter", 2: "winter",
+          3: "spring", 4: "spring", 5: "spring",
+          6: "summer", 7: "summer", 8: "summer",
+          9: "fall", 10: "fall", 11: "fall"}
+
+# Load, parse the timestamp, and filter to the analyte of interest.
+df = pd.read_csv("data/cleaned_data_long.csv", parse_dates=["date_time"])
+df = df[df["characteristic"] == CHARACTERISTIC].copy()
+
+# Optional single cap to drop obvious data-entry errors (applied once).
+if VALUE_CAP is not None:
+    n_dropped = int((df["measure_value"] >= VALUE_CAP).sum())
+    df = df[df["measure_value"] < VALUE_CAP].copy()
+    print(f"{ANALYTE}: dropped {n_dropped} rows >= cap {VALUE_CAP}")
+
+df["season"] = df["month"].map(SEASON)
+
+df.head()
+```
+
+Summary statistics
+
+```{python}
+#| label: py-describe
+df["measure_value"].describe()
+```
+
+Count observations below the detection limit
+
+```{python}
+#| label: py-below-mdl
+below = df["measure_value"] < df["mdl"]
+print(f"{int(below.sum())} of {len(df)} observations below MDL")
+
+# rows below MDL, for inspection
+df.loc[below]
+```
+
+Observations per month / per season-site
+
+```{python}
+#| label: py-effort
+# Very few winter observations is the recurring problem.
+print(df.groupby("month").size())
+
+# Sampling effort differs by season AND by season within site.
+df.groupby(["season", "site"]).size()
+```
+
+Percent of calendar days sampled, by season
+
+```{python}
+#| label: py-coverage
+# Unique sampling days (pooled across sites), labelled by season.
+daily = (
+    df.assign(date=df["date_time"].dt.normalize())
+      .drop_duplicates("date")
+)
+daily["season"] = daily["date"].dt.month.map(SEASON)
+
+# Every calendar day in the record window, labelled by season.
+all_days = pd.date_range(df["date_time"].min().normalize(),
+                         df["date_time"].max().normalize(), freq="D")
+calendar = pd.DataFrame({"date": all_days})
+calendar["season"] = calendar["date"].dt.month.map(SEASON)
+
+coverage = pd.DataFrame({
+    "observed_days": daily.groupby("season").size(),
+    "possible_days": calendar.groupby("season").size(),
+})
+coverage["pct_present"] = 100 * coverage["observed_days"] / coverage["possible_days"]
+coverage["pct_missing"] = 100 - coverage["pct_present"]
+coverage
+```
+
+
+# R EDA & diagnostics
+
+```{r}
+#| label: r-setup
+#| message: false
+#| warning: false
+library(tidyverse)
+
+# ── EDIT HERE to switch analyte ──────────────────────────────────
+CHARACTERISTIC <- "Inorganic nitrogen (nitrate and nitrite)"   # exact string in the 'characteristic' column
+VALUE_CAP      <- 15              # drop obvious errors >= this; set Inf to keep all
+ANALYTE        <- "NOx (mg/L)"           # axis / title label
+# ─────────────────────────────────────────────────────────────────
+
+season_levels <- c("winter", "spring", "summer", "fall")
+
+assign_season <- function(month) {
+  dplyr::case_when(
+    month %in% c(12, 1, 2)  ~ "winter",
+    month %in% c(3, 4, 5)   ~ "spring",
+    month %in% c(6, 7, 8)   ~ "summer",
+    month %in% c(9, 10, 11) ~ "fall"
+  )
+}
+
+# Load and clean ONCE. Everything downstream uses `dat`.
+dat <- read.csv("data/cleaned_data_long.csv") %>%
+  dplyr::filter(characteristic == CHARACTERISTIC, measure_value < VALUE_CAP) %>%
+  dplyr::mutate(
+    date_time = as.POSIXct(date_time),
+    date      = lubridate::as_date(date_time),
+    year      = lubridate::year(date_time),
+    doy       = lubridate::yday(date_time),
+    season    = factor(assign_season(month), levels = season_levels),
+    below_mdl = dplyr::if_else(measure_value < mdl, 1, 0)
+  )
+
+# ── Reusable plot helpers ────────────────────────────────────────
+
+# Create site labels
+site_labs<- c("center_hill" = "Center Hill",
+              "dale_hollow" = "Dale Hollow",
+              "percy_priest" = "Percy Priest")
+
+# Scatter of measure_value vs a chosen x, smoothed, faceted by site.
+plot_scatter <- function(data, xvar, xlab = NULL,
+                         smooth_method = "gam", smooth_formula = y ~ s(x)) {
+  ggplot(data, aes({{ xvar }}, measure_value)) +
+    geom_point(alpha = 0.6) +
+    geom_smooth(method = smooth_method, formula = smooth_formula) +
+    facet_wrap(~ site, scales = "free_y",
+                labeller = as_labeller(site_labs)) +
+    labs(x = xlab, y = ANALYTE) +
+    theme_bw()
+}
+
+# Density of measure_value, optionally on the log scale.
+plot_density <- function(data, log = FALSE) {
+  d <- dplyr::mutate(data, .x = if (log) log(measure_value) else measure_value)
+  ggplot(d, aes(.x)) +
+    geom_density(fill = "grey85", color = "grey30") +
+    labs(x = if (log) paste0("log(", ANALYTE, ")") else ANALYTE) +
+    theme_bw()
+}
+```
+
+Core relationships: over time, by distance, and distribution shape
+
+```{r}
+#| label: r-core
+#| message: false
+#| warning: false
+
+# Over time, per site.
+plot_scatter(dat, date_time, xlab = NULL)+
+  theme(text = element_text(size = 13))
+
+# By total distance, per site (looser default smoother).
+plot_scatter(dat, total_distance, xlab = "Total distance from dam",
+             smooth_method = "loess", smooth_formula = y ~ x)+
+            theme(text = element_text(size = 13))
+
+# Distribution: raw is right-skewed (gamma-like)...
+plot_density(dat, log = FALSE)
+
+# ...log-transformed is closer to normal (residuals are what matter).
+plot_density(dat, log = TRUE)
+```
+
+Collection effort by season
+
+```{r}
+#| label: r-effort
+#| message: false
+#| warning: false
+
+# measure_value vs month: far more data in summer than winter.
+ggplot(dat, aes(month, measure_value)) +
+  geom_point(alpha = 0.6) +
+  labs(y = ANALYTE) +
+  theme_bw()
+
+# n by season within site: winter is unusable, spring is a stretch.
+dat %>%
+  dplyr::count(season, site) %>%
+  ggplot(aes(season, n)) +
+  geom_col() +
+  facet_wrap(~ site) +
+  theme_bw()
+
+# Timeline colored by season, per site.
+ggplot(dat, aes(date_time, measure_value, color = season)) +
+  geom_point(alpha = 0.6) +
+  facet_wrap(~ site) +
+  theme_bw()
+
+# Day-of-year by year, to see the within-year sampling window.
+ggplot(dat, aes(doy, measure_value)) +
+  geom_point(alpha = 0.6) +
+  facet_grid(rows = vars(year))
+```
+
+
+# Deep dive: seasonal trends in missingness
+
+```{r}
+#| label: r-coverage
+#| message: false
+#| warning: false
+
+# =====================================================================
+# (1) Year x season x reservoir coverage
+# Is the SEASONAL COMPOSITION of sampling stable across years?
+# Pooled counts hide drift. Drift here aliases into any s(date) trend.
+# =====================================================================
+coverage <- dat %>%
+  dplyr::count(site, year, season, name = "n") %>%
+  tidyr::complete(site, year, season, fill = list(n = 0))
+
+# Raw counts as a labelled tile grid.
+p1_counts <- ggplot(coverage, aes(year, season, fill = n)) +
+  geom_tile(color = "grey90") +
+  geom_text(aes(label = n), size = 2.7) +
+  facet_wrap(~ site, ncol = 1) +
+  scale_fill_viridis_c(option = "mako", direction = -1) +
+  labs(title = "Sample count by year x season", x = NULL, y = NULL, fill = "n") +
+  theme_minimal(base_size = 11)
+
+# Composition within each year -- the drift check.
+# Look for: bars whose seasonal mix shifts left to right. A stable trend
+# model needs seasonal proportions roughly constant, or season carried
+# explicitly so the trend is conditional.
+p1_comp <- coverage %>%
+  group_by(site, year) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  ggplot(aes(year, prop, fill = season)) +
+  geom_col(width = 0.9) +
+  facet_wrap(~ site, ncol = 1) +
+  scale_fill_viridis_d(option = "mako", end = 0.9) +
+  labs(title = "Seasonal composition of sampling, within year",
+       x = NULL, y = "proportion of samples", fill = "season") +
+  theme_minimal(base_size = 11)
+
+print(p1_counts)
+print(p1_comp)
+```
+
+```{r}
+#| label: r-censoring
+#| message: false
+#| warning: false
+
+# =====================================================================
+# (2) Censoring rate by season x reservoir, plus MDL over time
+# Confirm whether the unsampled season is also the least-censored
+# regime, and rule out a drifting detection limit masquerading as trend.
+# =====================================================================
+cens_summary <- dat %>%
+  group_by(site, season) %>%
+  summarise(
+    n        = n(),
+    n_cens   = sum(below_mdl, na.rm = TRUE),
+    pct_cens = round(100 * n_cens / n, 1),
+    .groups  = "drop"
+  ) %>%
+  arrange(site, season)
+
+print(cens_summary, n = Inf)
+
+# Censoring by year, to separate environmental from lab drift.
+cens_by_year <- dat %>%
+  group_by(site, year) %>%
+  summarise(pct_cens = round(100 * mean(below_mdl, na.rm = TRUE), 1),
+            n = n(), .groups = "drop")
+
+p2_cens <- ggplot(cens_by_year, aes(year, pct_cens, color = site)) +
+  geom_line() + geom_point() +
+  labs(title = "Percent below MDL by year", x = NULL, y = "% censored") +
+  theme_minimal(base_size = 11)
+
+# Distinct detection limits and the windows they apply to.
+# Look for: MDL steps that line up with changes in pct_cens.
+mdl_windows <- dat %>%
+  group_by(mdl, date) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  arrange(mdl, date)
+
+print(mdl_windows)
+
+p2_mdl <- ggplot(dat, aes(date, mdl, color = site)) +
+  geom_point(alpha = 0.5, size = 1) +
+  labs(title = "Detection limit over time", x = NULL, y = "MDL") +
+  theme_minimal(base_size = 11)
+
+print(p2_cens)
+print(p2_mdl)
+```
+
+```{r}
+#| label: r-seasonal-dist
+#| message: false
+#| warning: false
+
+# =====================================================================
+# (3) Raw values by season x reservoir, censored points flagged
+# How strongly seasonal is the response? Sets the stakes of the missing
+# winter. Censored values are drawn at their limit and flagged.
+# Look for: heavy overlap across seasons => low-stakes winter gap;
+# strong separation => the gap is an inference problem.
+# =====================================================================
+p3 <- dat %>%
+  mutate(
+    below_mdl_bool = below_mdl == 1,
+    plot_val       = if_else(measure_value < mdl, mdl, measure_value)  # censored sit at limit
+  ) %>%
+  ggplot(aes(season, plot_val)) +
+  geom_violin(fill = "grey92", color = "grey70", scale = "width") +
+  geom_jitter(aes(color = below_mdl_bool, shape = below_mdl_bool),
+              width = 0.18, height = 0, alpha = 0.6, size = 1.3) +
+  scale_y_log10() +
+  scale_color_manual(values = c(`FALSE` = "grey30", `TRUE` = "firebrick"),
+                     labels = c("observed", "<= MDL")) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 2),
+                     labels = c("observed", "<= MDL")) +
+  facet_wrap(~ site) +
+  labs(title = paste0(ANALYTE, " by season (censored values shown at the detection limit)"),
+       x = NULL, y = paste0(ANALYTE, " (log scale)"), color = NULL, shape = NULL) +
+  theme_minimal(base_size = 11)
+
+print(p3)
+```
+
+```{r}
+#| label: r-intervals
+#| message: false
+#| warning: false
+
+# =====================================================================
+# (4) Sampling-interval distribution per reservoir
+# Make the winter gaps explicit and gauge how much the CAR1 / GP term
+# can learn. Gaps are computed WITHIN a station series (id), not pooled
+# across stations (pooling invents spurious tiny gaps).
+# =====================================================================
+intervals <- dat %>%
+  arrange(site, id, date) %>%
+  group_by(site, id) %>%
+  mutate(gap_days = as.numeric(date - lag(date))) %>%
+  ungroup() %>%
+  filter(!is.na(gap_days), gap_days > 0)
+
+interval_summary <- intervals %>%
+  group_by(site) %>%
+  summarise(
+    median_gap = median(gap_days),
+    q90_gap    = quantile(gap_days, 0.90),
+    max_gap    = max(gap_days),
+    n_gaps     = n(),
+    .groups    = "drop"
+  )
+
+print(interval_summary)
+
+# Look for: a long right tail / large max_gap is the winter hole.
+p4 <- ggplot(intervals, aes(gap_days)) +
+  geom_histogram(bins = 40, fill = "grey40") +
+  facet_wrap(~ site, scales = "free_y") +
+  labs(title = "Days between consecutive samples (within station)",
+       x = "gap (days)", y = "count") +
+  theme_minimal(base_size = 11)
+
+print(p4)
+```
+
+```{r}
+#| label: r-span
+#| message: false
+#| warning: false
+
+# =====================================================================
+# (5) Record span and n per reservoir
+# Are the three reservoirs comparable in record length and replication
+# before any trend contrast is attempted?
+# =====================================================================
+span <- dat %>%
+  group_by(site) %>%
+  summarise(
+    n          = n(),
+    first      = min(date),
+    last       = max(date),
+    span_yrs   = round(as.numeric(difftime(max(date), min(date),
+                                           units = "days")) / 365.25, 1),
+    n_years    = n_distinct(year),
+    n_stations = n_distinct(id),
+    .groups    = "drop"
+  )
+
+print(span)
+
+# Timeline strip: every sample as a point, colored by season.
+# Look for: differing record windows, and visible winter voids.
+p5 <- ggplot(dat, aes(date, site, color = season)) +
+  geom_point(position = position_jitter(height = 0.15), alpha = 0.5, size = 1) +
+  scale_color_viridis_d(option = "mako", end = 0.9) +
+  labs(title = "Sample timing by reservoir", x = NULL, y = NULL, color = "season") +
+  theme_minimal(base_size = 11)
+
+print(p5)
+```
+
+
+## MDL over time, with observed values
+
+```{r}
+#| label: r-mdl-trend
+#| message: false
+#| warning: false
+
+# One row per site-date so the MDL step pattern is not over-plotted.
+dat %>%
+  distinct(site, date, .keep_all = TRUE) %>%
+  ggplot(aes(date, mdl)) +
+  geom_smooth(method = "lm", formula = y ~ x) +
+  geom_point(size = 3, color = "cadetblue") +
+  facet_wrap(~ site) +
+  theme_bw()
+# monotonic decline in MDL over time, which makes sense
+```

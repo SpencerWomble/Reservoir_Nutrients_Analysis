@@ -1,0 +1,245 @@
+
+
+```{r}
+
+ANALYTE<- "Phosphorus"
+VALUE_CAP<- 5
+
+
+library(tidyverse)
+library(here)
+
+data<- read_csv(here::here("data", "cleaned_data_long.csv"))
+
+# assign season levels
+season_levels <- c("winter", "spring", "summer", "fall")
+
+assign_season <- function(month) {
+  dplyr::case_when(
+    month %in% c(12, 1, 2)  ~ "winter",
+    month %in% c(3, 4, 5)   ~ "spring",
+    month %in% c(6, 7, 8)   ~ "summer",
+    month %in% c(9, 10, 11) ~ "fall"
+  )
+}
+
+
+data<- data |> 
+    dplyr::filter(characteristic == ANALYTE & measure_value < VALUE_CAP) |> 
+      dplyr::mutate(
+    date_time = as.POSIXct(date_time),
+    date      = lubridate::as_date(date_time),
+    year      = lubridate::year(date_time),
+    doy       = lubridate::yday(date_time),
+    season    = factor(assign_season(month), levels = season_levels),
+    below_mdl = dplyr::if_else(measure_value < mdl, 1, 0)
+  )
+
+
+
+```
+
+
+# ggplot themes and labels
+
+```{r}
+
+# make a universial ggplot theme
+ggtheme<- theme_bw()+
+    theme(text = element_text(size = 14),
+          panel.grid.minor = element_blank())
+
+
+# set labels for for the sites
+site_labs <- c("center_hill" = "Center Hill",
+                "dale_hollow" = "Dale Hollow",
+                "percy_priest" = "Percy Priest")
+
+```
+
+
+
+# Plotting data by season
+
+```{r}
+
+# make season count df
+season_count<- data |> 
+    dplyr::group_by(season, site) |> 
+    dplyr::count() |> 
+    dplyr::ungroup()
+
+# make the plot
+season_count |>
+    ggplot(aes(x=season, y=n))+
+    geom_col()+
+    ggtheme+
+    facet_wrap(~site, labeller = as_labeller(site_labs))+
+    labs(x='Season',
+        y="Count")
+
+
+# =====================================================================
+# Year x season x reservoir coverage
+# Is the SEASONAL COMPOSITION of sampling stable across years?
+# Pooled counts hide drift. Drift here aliases into any s(date) trend.
+# =====================================================================
+coverage <- data %>%
+  dplyr::count(site, year, season, name = "Count") %>%
+  tidyr::complete(site, year, season, fill = list(Count = 0))
+
+# Raw counts as a labelled tile grid.
+p1_counts <- ggplot(coverage, aes(year, season, fill = Count)) +
+  geom_tile(color = "grey90") +
+  geom_text(aes(label = Count), size = 2.7) +
+  facet_wrap(~ site, ncol = 1, labeller = as_labeller(site_labs)) +
+  scale_fill_viridis_c(option = "mako", direction = -1) +
+  labs(title = "Sample count by year by season", x = NULL, y = NULL, fill = "n") +
+  ggtheme
+
+print(p1_counts)
+
+# for the data we have, see what the proportion of records were recorded in which season
+p1_comp <- coverage %>%
+  group_by(site, year) %>%
+  mutate(prop = Count / sum(Count)) %>%
+  ungroup() %>%
+  ggplot(aes(year, prop, fill = season)) +
+  geom_col(width = 0.9) +
+  facet_wrap(~ site, ncol = 1, labeller = as_labeller(site_labs)) +
+  scale_fill_viridis_d(option = "mako", end = 0.9) +
+  labs(title = "Seasonal composition of sampling, within year",
+       x = NULL, y = "Proportion of samples", fill = "Season") +
+  ggtheme
+
+print(p1_comp)
+
+
+# =====================================================================
+# (2) Censoring rate by season x reservoir, plus MDL over time
+# Confirm whether the unsampled season is also the least-censored
+# regime, and rule out a drifting detection limit masquerading as trend.
+
+# This one is a lot less useful for TP due to the lack of MDL info
+
+# =====================================================================
+cens_summary <- data %>%
+  group_by(site, season) %>%
+  summarise(
+    n        = n(),
+    n_cens   = sum(below_mdl, na.rm = TRUE),
+    pct_cens = round(100 * n_cens / n, 1),
+    .groups  = "drop"
+  ) %>%
+  arrange(site, season)
+
+print(cens_summary, n = Inf)
+
+# Censoring by year, to separate environmental from lab drift.
+cens_by_year <- data %>%
+  group_by(site, year) %>%
+  summarise(pct_cens = round(100 * mean(below_mdl, na.rm = TRUE), 1),
+            n = n(), .groups = "drop")
+
+p2_cens <- ggplot(cens_by_year, aes(year, pct_cens, color = site)) +
+  geom_line() + geom_point() +
+  labs(title = "Percent below MDL by year", x = NULL, y = "% censored") +
+  theme_minimal(base_size = 11)
+
+# Distinct detection limits and the windows they apply to.
+# Look for: MDL steps that line up with changes in pct_cens.
+mdl_windows <- data %>%
+  group_by(mdl, date) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  arrange(mdl, date)
+
+print(mdl_windows)
+
+p2_mdl <- ggplot(data, aes(date, mdl, color = site)) +
+  geom_point(alpha = 0.5, size = 1) +
+  labs(title = "Detection limit over time", x = NULL, y = "MDL") +
+  theme_minimal(base_size = 11)
+
+print(p2_cens)
+print(p2_mdl)
+
+
+
+```
+
+
+
+# MDL issue and censoring
+
+```{r}
+# here's a histogram plot showing the values for rows that don't have an MDL
+ggplot(data, aes(x = measure_value)) +
+  geom_histogram(color = "white") +
+ # geom_point(
+  #  data = data |> dplyr::filter(!is.na(mdl)),
+  #  aes(x = measure_value, y = 0),
+  #  inherit.aes = FALSE
+  # )+
+  ggtheme
+
+data |> 
+  dplyr::filter(is.na(mdl)) |> 
+  count()
+# okay so most don't have an MDL... fuck
+
+
+# show count of obs for each unique measure_value for those without an mdl
+mdl_counts <- data |>
+  filter(!is.na(mdl)) |>
+  count(measure_value)
+
+ggplot(mdl_counts, aes(x = measure_value, y = n)) +
+  geom_col()+
+  geom_point()+
+  labs(x = ANALYTE,
+        y = "Count")+
+  ggtheme
+
+
+```
+
+# Density plots
+
+```{r}
+# Density of measure_value, optionally on the log scale.
+plot_density <- function(data, log_scale = FALSE, facet_var = NULL) {
+
+  d <- data |>
+    mutate(
+      .x = if (log_scale) log(measure_value) else measure_value
+    )
+
+  p <- ggplot(d, aes(.x)) +
+    geom_density(fill = "grey85", color = "grey30") +
+    theme_bw()
+
+  if (!is.null(facet_var)) {
+    p <- p + facet_wrap(vars(.data[[facet_var]]), labeller = as_labeller(site_labs))
+  }
+
+  p
+}
+
+
+# Distribution: raw is right-skewed (gamma-like)...
+plot_density(data, log = FALSE)+
+    labs(y="Density")+
+    ggtheme
+
+# ...log-transformed is closer to normal (residuals are what matter).
+plot_density(data, log = TRUE)
+
+
+# density by site
+plot_density(data, log = FALSE, facet_var = "site")+
+    ggtheme+
+    labs(x= expression(TP~mg~L^{-1}),
+        y="Density")
+
+
+```
